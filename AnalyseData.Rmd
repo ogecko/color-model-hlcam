@@ -1,0 +1,426 @@
+---
+Title: "color-model-hlcam"
+author: "David Morrison"
+date: "07/08/2017"
+---
+# High Luminance Color Space Model 
+This document aims to develop an improved color appearance model that can be used for the accurate analysis of images for artists and painters.
+It is based on the latest research into extended luminance color appearance models beyond CIECAM02.
+
+## References
+* Kim Min H, **Modeling Human Color Perception under Extended Luminance Levels**, http://reality.cs.ucl.ac.uk/projects/xlrcam/kim09xlrcam.pdf
+
+
+```{r Initialise, echo=FALSE}
+require(ggplot2)
+require(dplyr)
+```
+## Load the experimental data
+Extract the data from the pdf at http://jankautz.com/publications/experimental_data.pdf
+1. Copy the PDF's text to data_raw.txt
+2. Run the node program 'node data_extract.js'
+
+```{r loaddata}
+pwd
+all=read.csv(file="Projects/color-model-hlcam/data_perceptual.csv",header=TRUE)
+```
+
+## Explore the perceptual data
+Do a jitter and scatter plot of the perceptual dimensions
+1. Hc - Hue quadrature. Varies from 0 to 400: redness (0) - yellowness (100) - greenness (200) - blueness (300) - redness (400)
+2. Jc - Lightness. A scale of 0–100 relative to the brightness of reference white
+3. Mc - Colorfulness. An absolute scale of 0 to unlimited, but typically 0 to 100
+
+```{r perceptions}
+ggplot(data=all)+geom_jitter(aes(y=Jc,x="Jc"))+geom_jitter(aes(y=Mc,x="Mc"))+geom_jitter(aes(y=Hc,x="Hc"))+ theme(axis.title.x = element_blank())+ theme(axis.title.y = element_blank())
+
+ggplot(data=all)+aes(x=Hc, y=Jc, color=Mc)+geom_point()
+
+```
+
+## OLD DATA
+
+```{r related}
+
+
+
+
+## combine to form matrix for simple manipulation
+mun_XYZ_C <- matrix(c(X,Y,Z), ncol=3)
+
+## cleanup the dataset. Test for y == 0 and set X,Y,Z to be 0 in this case
+mun_XYZ_C[which(all$y==0),] <- c(0,0,0)
+
+remove(X,Y,Z)
+```
+
+## Perform Chromatic Adaption
+The chromaticity coordinates of the raw data were calculated using illuminant C and the CIE 1931 2 degree observer. We need to adapt these to illuminant D65 which is used by sRGB. The equation for conversion can be found at http://www.brucelindbloom.com/Eqn_ChromAdapt.html. We will use the Bradford Adaption Method.
+
+```{r ChromaticAdaption}
+M_adapt_C_to_D65 <- matrix(c(0.990448, -0.012371, -0.003564, -0.007168, 1.015594, 0.006770, -0.011615, -0.002928, 0.918157), ncol=3, byrow=TRUE)
+
+## perform the chromatic adaption: convert from C -> D65 using Bradford method
+mun_XYZ_D65 <- mun_XYZ_C %*% M_adapt_C_to_D65
+all$D65X <- mun_XYZ_D65[,1]
+all$D65Y <- mun_XYZ_D65[,2]
+all$D65Z <- mun_XYZ_D65[,3]
+Total <- all$D65X + all$D65Y + all$D65Z
+all$CIEy=ifelse(Total==0, 0.32902, all$D65Y / Total)
+all$CIEx=ifelse(Total==0, 0.31271, all$D65X / Total)
+all$CIEY=all$D65Y
+
+  
+remove(M_adapt_C_to_D65,mun_XYZ_C,Total)
+```
+
+## Review and cleanup the data
+Lets review the data with a jitter plot to see if we need to cleanup the data
+Also lets add an ordered Hue scale and a numeric Hue scale that will help with later modelling. 
+ 
+
+```{r Cleanup}
+
+## Use a jitter plot to look for any outliers
+ggplot(data=all)+geom_jitter(aes(y=D65X,x="D65X"))+geom_jitter(aes(y=D65Y,x="D65Y"))+geom_jitter(aes(y=D65Z,x="D65Z"))+scale_y_continuous(breaks=seq(-8,8))+ theme(axis.title.x = element_blank())+ theme(axis.title.y = element_blank())
+
+## also later noticed a bad data point at H==7.5PB, V==0.2, C==20
+## allx=all%>%filter(C>0,V==0.2|V==5|V==8)
+## ggplot(data=allx,aes(y=D65X,x=H,colour=C))+geom_line(aes(group=C))+geom_point()+facet_wrap(~V,scales="free")
+
+## Remove the obvious outliers
+all <- all%>%filter(D65X>-0.2,D65Z>-0.2,D65Z<3,!((H=="7.5PB")&(V==0.2)&(C==20)))
+mun_XYZ_D65 <- matrix(c(all$D65X,all$D65Y,all$D65Z), ncol=3)
+
+## Check the cleanup
+ggplot(data=all)+geom_jitter(aes(y=D65X,x="D65X"))+geom_jitter(aes(y=D65Y,x="D65Y"))+geom_jitter(aes(y=D65Z,x="D65Z"))+scale_y_continuous(breaks=seq(-8,8))+ theme(axis.title.x = element_blank())+ theme(axis.title.y = element_blank())
+
+```
+
+## Modelling the dataset
+Our aim is to be able to predict the values of R, G, and B based on given values of HA, V and C. To simplify things we will actually develop models for D65X and D65Z then convert them to RGB with the known formulas. Since D65Y is very closely related to V we will only need to develop two non-linear models.
+* D65X = fn1(HA,V,C)
+* D65Z = fn2(HA,V,C)
+* D65Y = fn3(V)
+
+Lets start by looking at the dataset for D65X and D65Z, the two variables we are trying to predict. We will draw scatterplots, one scatterplot for each increasing value of V. The scatterplots will draw points with y=D65X against x=HA. We'll draw a line through all the datapoints with the same C. Key points to note are
+*The overall relationship appears periodic with respect to HA from 0 to 360 (cf the color circle)
+*As C nears 0 there is less influence from the HA until its a flat line (cf less Chroma means less Hue effect)
+*As C increases, D65X reduces in the Green area (HA=180) and increases in the RedPurple area (HA=360)
+*As C increases, D65Z reduces in the Yellow area (HA=90) and increases in the PurpleBlue area (HA=270)
+*As V increases, both D65X and D65Z increase and the whole wave shifts up (cf more brightness)
+*At low V there is small variation from the grey point, at high V high variation
+
+
+```{r FirstView, fig.width=15, fig.height=15}
+## create some statistics across all hues
+stats <- all%>%filter(V> -1)%>%group_by(V,C)%>%summarise(n=n(),
+          Xmin=min(D65X),Xmax=max(D65X),Xmean=mean(D65X),Xmed=median(D65X),Xmid=(Xmax+Xmin)/2,Xmag=(Xmax-Xmin)/2,
+          Ymin=min(D65Y),Ymax=max(D65Y),Ymean=mean(D65Y),Ymed=median(D65Y),Ymid=(Ymax+Ymin)/2,Ymag=(Ymax-Ymin)/2,
+          Zmin=min(D65Z),Zmax=max(D65Z),Zmean=mean(D65Z),Zmed=median(D65Z),Zmid=(Zmax+Zmin)/2,Zmag=(Zmax-Zmin)/2)
+
+
+## view the data - all the data, one chart for each Value
+ggplot(data=all%>%filter(C>-1,C<18),aes(y=D65Z,x=HA,colour=C))+geom_path(aes(group=C))+geom_point()+scale_x_continuous(breaks=seq(0, 360, by=360/8))+facet_wrap(~V)
+
+## view the data - all the data one chart for each Value
+ggplot(data=all%>%filter(C>-1),aes(y=D65Z,x=HA,colour=C))+geom_line(aes(group=C))+geom_point()+scale_x_continuous(breaks=seq(0, 360, by=360/8))+facet_wrap(~V)
+
+## deeper examination where C==0
+ggplot(data=all%>%filter(C==0),aes(y=D65X,x=V))+geom_line()+geom_point(color="blue")+geom_line(aes(y=D65Z,color="red"))+geom_point(aes(y=D65Z,color="red"))
+
+## Model the mean greypoint data against V where C==0, ie X is a fn(poly(V,5)) and Z is a simple ratio of X
+all$XZratio=all$D65Z/all$D65X
+fit0X = lm(D65X~0+poly(V,5,raw=T),data=all%>%filter(C==0)); summary(fit0X)
+fit0Z = lm(D65Z~0+poly(V,5,raw=T),data=all%>%filter(C==0)); summary(fit0Z)
+fit0Y = lm(D65Y~0+poly(V,5,raw=T),data=all%>%filter(C==0)); summary(fit0Y)
+
+## Store away the means of the grey points5
+all$D65Xmean = predict(fit0X,all)
+all$D65Zmean = predict(fit0Z,all)
+all$D65Ymean = predict(fit0Y,all)
+all$D65Xoffset = all$D65X - all$D65Xmean
+all$D65Zoffset = all$D65Z - all$D65Zmean
+all$D65Yoffset = all$D65Y - all$D65Ymean
+
+## Model the standard deviation of the data against V where C==4. ie sd(X) is a fn(poly(V,3))
+s <- all%>%filter(V>0,C==4)%>%group_by(V,C)%>%summarise(n=n(),Xsd=sd(D65Xoffset),Zsd=sd(D65Zoffset),Xmean=mean(D65Xoffset),Zmean=mean(D65Zoffset))
+ggplot(data=s,aes(x=V,y=Xsd))+geom_line()          
+fit0Xsd=lm(Xsd~poly(V,3,raw=T),data=s);summary(fit0Xsd)
+fit0Zsd=lm(Zsd~poly(V,3,raw=T),data=s);summary(fit0Zsd)
+
+## Store the sd and standardised data 
+all$D65Xsd = predict(fit0Xsd,all)
+all$D65Zsd = predict(fit0Zsd,all)
+all$D65Xstd = all$D65Xoffset / all$D65Xsd
+all$D65Zstd = all$D65Zoffset / all$D65Zsd
+
+## Now model standardised responses 
+fit4X = lm(D65Xstd~0+poly(C,3,raw=T)+C:cos((HA+16)/360*2*3.14159),data=all%>%filter(C<28,!(V>0&V<1))); summary(fit4X)
+fit4Z = lm(D65Zstd~0+poly(C,2,raw=T)+C:sin((HA+13)/360*2*3.14159)+C:sin((HA-31)/180*2*3.14159),data=all%>%filter(C<28,!(V>0&V<1))); summary(fit4Z)
+
+# Now model the INVERSE V operations from Y part of  X,Y,Z to V
+fit9V = lm(V~poly(D65Y,7,raw=T),data=all%>%filter(C<28,!(V>0&V<1))); summary(fit9V)
+
+# Now model the INVERSE C and HA operation from CIExy converted to polar co-ordinates
+ggplot(data=all%>%filter(V>0.8),aes(x=CIEx-0.3127261,y=CIEy-0.3290336))+geom_point()+geom_path(aes(group=H,color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+all$a=27.35 + atan2(all$CIEy-0.3290336, all$CIEx-0.3127261)/(2*pi)*360    ##-180 to 180
+all$m = sqrt((all$CIEx-0.3127261)*(all$CIEx-0.3127261)+(all$CIEy-0.3290336)*(all$CIEy-0.3290336))
+all$dc = all$C / all$m     # ratio for r to C (ie C = r * dc)
+all$da = all$HA - all$a    # difference from a to HA (ie HA = a + da)
+all$da = all$da + (all$da > 180) * -360
+all$VPred=predict(fit9V,all)
+all$dv = all$V - all$VPred
+ggplot(data=all%>%filter(C<32,V>0.8),aes(x=V,y=dv))+geom_point(aes(color=H))+geom_path(aes(group=V,alpha=0.1))
+
+# First hemisphere Inverse for C needs adjusting depending on angle and V
+ggplot(data=all%>%filter(a>0,C>0&C<32,V>.8),aes(x=a,y=dc))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+fit9C1 = lm(dc~V*sin((a-4)/360*2*pi),data=all%>%filter(a>0,C>0,C<32)); summary(fit9C1)
+
+# Second hemisphere, V>5 Inverse for C needs adjusting depending on angle and V
+ggplot(data=all%>%filter(a<0,C>0&C<32),aes(x=a,y=dc))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+fit9C2a = lm(dc~sin((a+77)/175*2*pi),data=all%>%filter(a<0,C>0&C<30,V>5&V<10)); summary(fit9C2a)
+
+# Second hemisphere, V<=5 Inverse for C needs adjusting depending on angle and V
+ggplot(data=all%>%filter(a<0,C>0&C<32,V<=5),aes(x=a,y=dc))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+fit9C2b = lm(dc~poly(V,3,raw=T),data=all%>%filter(a<0,C>0&C<30,V<=5)); summary(fit9C2b)
+
+# The residual angle appears to have relationship with a and V, (and C)
+ggplot(data=all%>%filter(C>0,V>.8),aes(x=a,y=da))+coord_polar()+geom_point(aes(color=H))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~V)
+ggplot(data=all%>%filter(C>0,V>.8),aes(x=a,y=da))+geom_point(aes(color=H))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~V)
+ggplot(data=all%>%filter(C>0,V>.8),aes(x=a,y=V))+geom_point(aes(color=H))+geom_path(aes(group=HA,alpha=0.1))+facet_wrap(~C)
+
+# First quadrant then da has linear relationship with V, a and C
+ggplot(data=all%>%filter(a>=90,C<32,V>0&V<10),aes(x=a,y=da))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+fit9HA1 = lm(da~V+a+C,data=all%>%filter(a>=90,C<32,V>0&V<10)); summary(fit9HA1)
+
+# Second quadrant AND V>2 then da has linear relationship with V, a and C??
+ggplot(data=all%>%filter(a>=0&a<90,C<32,V>0&V<10),aes(x=a,y=da))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+fit9HA2 = lm(da~V+a+C,data=all%>%filter(a>=0&a<90,C<32,V>2&V<10)); summary(fit9HA2)
+
+# Third quadrant AND V>2 then da has linear relationship with a
+ggplot(data=all%>%filter(a>= -90&a<0,C>0&C<32,V>0.8&V<10),aes(x=a,y=da))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+fit9HA3 = lm(da~a,data=all%>%filter(a>= -90&a<0,C>0&C<32,V>2&V<10)); summary(fit9HA3)
+
+# Fouth quadrant then da has linear relationship with V, a and C
+ggplot(data=all%>%filter(a< -90,C>0&C<32,V>0.8&V<10),aes(x=a,y=da))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+fit9HA4 = lm(da~V+a+C,data=all%>%filter(a< -90,C>0&C<32,V>0.8&V<10)); summary(fit9HA4)
+
+
+
+# The prediction models for HA, V and C are approximate, use this as a seed for gradient descenet
+# Store away the predicted inverse starting points
+all$VPred=predict(fit9V,all)
+all$CPred=predict(fit9C,all)
+all$HAPred=27.35 + atan2(all$CIEy-0.3290336, all$CIEx-0.3127261)/(2*pi)*360 
+
+# Need to standardise features for gradient descent
+mean(all$HA); sd(all$HA); all$HAstd = (all$HA - mean(all$HA)) / sd(all$HA);
+mean(all$V); sd(all$V); all$Vstd = (all$V - mean(all$V)) / sd(all$V);
+mean(all$C); sd(all$C); all$Cstd = (all$C - mean(all$C)) / sd(all$C);
+
+
+####################### test gradient descent
+
+## Store away the standardised prediction and standard error
+all$D65XstdPred=predict(fit4X,all)
+all$D65ZstdPred=predict(fit4Z,all)
+all$D65XstdSE=all$D65Xstd-all$D65XstdPred
+all$D65ZstdSE=all$D65Zstd-all$D65ZstdPred
+
+## Store away the prediction and standard error
+all$D65XPred=all$D65Xmean+all$D65XstdPred*all$D65Xsd
+all$D65ZPred=all$D65Zmean+all$D65ZstdPred*all$D65Zsd
+all$D65YPred=all$D65Ymean
+
+## Overwrite originals with predictions
+all$D65X=all$D65XPred
+all$D65Z=all$D65ZPred
+all$D65Y=all$D65YPred
+```
+
+## Review the model
+The following graphs compare predicted with actual data
+
+```{r ReviewModel}
+## Lets review the residual error
+ggplot(data=all%>%filter(V>.8,C<30),aes(y=D65ZstdSE,x=HA,group=V,colour=V))+geom_point()+geom_line()+scale_x_continuous(breaks=seq(0, 360, by=360/8))+facet_wrap(~C,scales="free")
+
+## lets review polar plots
+ggplot(data=all%>%filter(V>-1),aes(y=D65X,x=HA,group=C,color=C))+coord_polar()+xlim(c(0,360))+geom_line()+geom_point(alpha=.6)+facet_wrap(~V)
+
+## lets review D65X and D65Y together (showing paths with constant V,C,HA)
+ggplot(data=all,aes(x=D65X,y=-D65Z))+geom_path(aes(group=V,color=V))+facet_wrap(~C)
+ggplot(data=all%>%filter(V>0,C<30),aes(x=D65X,y=-D65Z))+geom_point()+geom_path(aes(group=H,color=H))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~C,scales="free")
+ggplot(data=all%>%filter(V==6),aes(x=D65X,y=-D65Z))+geom_point()+geom_path(aes(group=H,color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V,scales="free")
+
+# how does D65X and D65Z vary relative to V,C and HA ***********************
+ggplot(data=all%>%filter(V>.8,C>0),aes(x=C,y=D65Zoffset))+geom_point()+geom_path(aes(group=H,color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V,scales="free")
+ggplot(data=all%>%filter(V>.8,C>0),aes(x=V,y=D65Zoffset))+geom_point()+geom_path(aes(group=H,color=H))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~C,scales="free")
+
+
+## ###########################################################
+## ******* lets review CIEx and CIEy together (showing paths with constant V,C,HA)
+ggplot(data=all%>%filter(V>0,C<30),aes(x=CIEx,y=CIEy))+geom_point()+geom_path(aes(group=H,color=H))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~C,scales="free")
+ggplot(data=all%>%filter(V>0.8),aes(x=CIEx,y=CIEy))+geom_point()+geom_path(aes(group=H,color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V)
+
+## CIEx/CIEy delta angle = f(r,na,V)
+ggplot(data=all%>%filter(C>0,V>.8),aes(x=r,y=da))+geom_point(aes(color=V))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~na,scales="free")
+## CIEx/CIEy delta angle = f(a, V, r)
+ggplot(data=all%>%filter(C>0,V>.8),aes(x=a,y=da))+geom_point(aes(color=H))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V,scales="free")
+## C = f(H, r, and V)
+ggplot(data=all%>%filter(C>0,V>.8),aes(x=r,y=C))+geom_point(aes(color=H))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~H,scales="free")
+## CIEy vs CIEx with contour lines for equal hue (arcs) and equal chroma (ovals)
+ggplot(data=all%>%filter(C>0,V>.8),aes(x=x,y=y))+geom_point(aes(color=H))+geom_path(aes(group=HA))+geom_path(aes(group=C,alpha=0.1))+facet_wrap(~V,scales="free")
+
+
+```
+
+## Creating the new dataset
+Lets create a dataset for all Hues, all Values (0 to 10) and all Chromas (0 to 30)
+
+```{r GenerateDataset}
+## Generate a dataset for all Hues, all Values (0 to 10) and all Chromas (0 to 60)
+alln <- all %>% filter(C==0) %>% select(h,V,C,H,HA,D65X,D65Y,D65Z)
+for (h in levels(all$H)) {
+  for (v in seq(1,9)) {
+    new=data.frame(h=h,V=v,C=seq(2,24,by=2),H=h,HA=0,D65X=0,D65Y=0,D65Z=0)
+    i=nrow(alln)
+    alln[seq(i+1,i+nrow(new)),]=new[seq(1,nrow(new)),]
+    }
+  }
+
+alln$HA <- (as.numeric(alln$H)-1)*360/40                    # create a continuous variable for modelling
+alln$HA <- ifelse(is.na(alln$HA),-1,alln$HA)                  # set the HA to -1 for "N"
+
+alln$D65XPred=predict(fit0X,alln)+predict(fit4X,alln)*predict(fit0Xsd,alln)
+alln$D65ZPred=predict(fit0Z,alln)+predict(fit4Z,alln)*predict(fit0Zsd,alln)
+alln$D65YPred=predict(fit0Y,alln)
+alln$D65Xstd = predict(fit4X,alln)
+alln$D65Zstd = predict(fit4Z,alln)
+## Overwrite originals with predictions
+alln$D65X=alln$D65XPred
+alln$D65Z=alln$D65ZPred
+alln$D65Y=alln$D65YPred
+
+##all<-alln %>% filter(!(C>32),!((H>264)&(H<271)&(C>5+V*20.5/3.5)))
+
+mun_XYZ_D65 <- matrix(c(all$D65X,all$D65Y,all$D65Z), ncol=3)
+
+
+```
+
+## Convert XYZ (D65) to Linear sRGB (D65)
+Now we can convert from XYZ to Linear sRGB. The equation for conversion can be found at http://www.brucelindbloom.com/Eqn_RGB_XYZ_Matrix.html. We shall use the precalculated matrix for sRGB with D65 illumination.
+
+```{r ConvertRGB1}
+## sRGB profile transformation:
+M_XYZ_to_sRGB_D65 <- matrix(c(3.24071, -0.969258, 0.0556352, -1.53726, 1.87599, -0.203996, -0.498571, 0.0415557, 1.05707), ncol=3, byrow=TRUE)
+
+## apply the conversion matrix
+mun_sRGB_D65 <- mun_XYZ_D65 %*% M_XYZ_to_sRGB_D65
+```
+
+## Convert Linear sRGB (D65) to sRGB (D65)
+sRGB space is non-linear so we need to compand the linear RGB channels to a non-linear sRGB scale. The equations for this conversion can be found at http://www.brucelindbloom.com/Eqn_XYZ_to_RGB.html
+
+```{r ConvertRGB2}
+
+## define the transformation functions, these are applied on a conditional basis:
+fun1 <- function(col_comp) { 1.055 * ( col_comp ^ ( 1 / 2.4 ) ) - 0.055 } 
+fun2 <- function(col_comp) { 12.92 * col_comp } 
+
+## the specific function is contingent on the absolute value of r,g,b components
+all$R <- ifelse(mun_sRGB_D65[,1] > 0.0031308, fun1(mun_sRGB_D65[,1]), fun2(mun_sRGB_D65[,1]))
+all$G <- ifelse(mun_sRGB_D65[,2] > 0.0031308, fun1(mun_sRGB_D65[,2]), fun2(mun_sRGB_D65[,2]))
+all$B <- ifelse(mun_sRGB_D65[,3] > 0.0031308, fun1(mun_sRGB_D65[,3]), fun2(mun_sRGB_D65[,3]))
+
+## create additional values based on these
+all$hexRGB <- hex(sRGB(all$R,all$G,all$B))
+all$LabL <- coords(as(sRGB(all$R,all$G,all$B), 'polarLAB'))[,1]
+all$LabC <- coords(as(sRGB(all$R,all$G,all$B), 'polarLAB'))[,2]
+all$LabH <- coords(as(sRGB(all$R,all$G,all$B), 'polarLAB'))[,3]
+
+```
+
+## Cleanup the data and clamp it to the sRGB space
+Create a new data set that has all observations that are outside the sRGB space removed
+Also clamp the RGB values from 0 to 1
+```{r ClampRGB}
+## create a data frame clipped to RGB scope
+allc <- all %>% filter((R>= -0.001)&(R<=1.004),(G>= -0.004)&(G<=1.004),(B>= -0.004)&(B<=1.004),
+                       (h=="N")|((V>=1)&(V<=9))) %>% arrange(HA)
+allc$R <- pmax(0,pmin(allc$R,1))
+allc$G <- pmax(0,pmin(allc$G,1))
+allc$B <- pmax(0,pmin(allc$B,1))
+allc$hexRGB <- hex(sRGB(allc$R,allc$G,allc$B))
+
+ggplot(data=allc,aes(x=HA,y=C))+geom_point()+geom_path(aes(group=V))+facet_wrap(~V,scales="free")
+
+## write the dataset out to a file
+write.csv(data.frame(h=allc$h,V=allc$V,C=allc$C,hexRGB=allc$hexRGB), file = "/mnt/Media1/Projects/R-training/ColorSpace.csv")
+```
+
+## Plot all the tiles
+Show all the munsell color tiles by hue, value and chroma
+
+```{r DrawTiles, fig.width=15, fig.height=40}
+
+ggplot(data = allc, aes(x = factor(C), y = factor(V))) +
+    geom_tile(aes(fill = hexRGB), color="white", size = 1) +
+    scale_colour_identity() +
+    scale_x_discrete("Chroma") + 
+    scale_y_discrete("Value", expand = c(0.125, 0)) +
+    scale_fill_identity()+
+    theme(aspect.ratio=1)+
+    facet_wrap(~ H,ncol=4)
+
+```
+## Compare against other spaces
+Show all the munsell colors against other color spaces
+
+```{r DrawLab}
+plot( as(sRGB(allc$R,allc$G,allc$B), 'HSV'), cex=0.5)
+plot( as(sRGB(allc$R,allc$G,allc$B), 'LAB'), cex=0.5)
+plot( as(sRGB(allc$R,allc$G,allc$B), 'polarLAB'), cex=0.5)
+ggplot(aes(y=LabL,x=V,colour=V),data=all)+geom_line(aes(group=V))+geom_point()
+ggplot(aes(y=LabH,x=H,colour=V),data=allc)+geom_point()
+ggplot(aes(y=LabC,x=C,colour=V),data=allc)+geom_point()
+
+## lets review x,y with the D65 midpoint shown
+ggplot(data=all%>%filter(V>.8,CIEy>0,CIEy<2,CIEx<2,V>.8),aes(x=CIEx,y=CIEy))+geom_point(aes(shape=is.na(hexRGB)))+geom_vline(aes(xintercept=0.31271))+geom_hline(aes(yintercept=0.32902))+geom_path(aes(group=H,color=H))+geom_path(aes(group=C,alpha=0.1))+geom_polygon(data=all%>%filter(V>0.8,C>0,!is.na(hexRGB))%>%group_by(V,HA)%>%arrange(desc(C))%>%slice(1),alpha=.3)+facet_wrap(~V)
+ggplot(data=all%>%filter(CIEy>0,CIEy<2,CIEx<2,V>.8),aes(x=CIEx,y=CIEy))+geom_point(aes(shape=is.na(hexRGB)))+geom_vline(aes(xintercept=0.31271))+geom_hline(aes(yintercept=0.32902))+geom_path(aes(group=H,color=H))+geom_path(aes(group=V,alpha=0.1))+facet_wrap(~C,scales="free") ## for a given level of C, the atan2(x,y) doesnt change much with V
+
+```
+
+## Show complement
+Create a function to show the complement of a certain hue
+
+```{r DrawComplement}
+complement <- function(hue.name,  back.col = "white") {
+  if (length(hue.name) > 1) stop("complement_slice currently only takes one hue")
+  if (!hue.name %in% all$H) stop("invalid hue name")
+  hues <- levels(all$H)
+  index <- which(hues == hue.name)
+  comp.hue <- hues[((index-1 + 20) %% 40)+1]
+  all.sub <- subset(allc, H == hue.name | H == comp.hue)
+  all.sub <- within(all.sub, { 
+    C <- ifelse(H == comp.hue, -1, 1) * C
+    H <- factor(H, levels = c(comp.hue, "N", hues[index])) 
+    })
+  
+  ggplot(aes(x = C, y = V), data = all.sub) +
+  geom_tile(aes(fill = hexRGB), colour = back.col,  size = 1) +
+  scale_fill_identity() +
+  scale_colour_identity() +
+  scale_x_continuous("Chroma") +
+  scale_y_continuous("Value") +
+  facet_grid(. ~ H,  scales = "free_x", space = "free")  +
+  coord_fixed()
+  }
+  
+complement("2.5R")
+
+```
+
+(C) David Morrison 2015
