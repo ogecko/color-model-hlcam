@@ -37,6 +37,7 @@ function extractAllData(data, phaseData) {
 	return result
 		.replace(/^$\n/gm,'')
 		.replace(/ /gm, ',')
+		.replace(/N\/A/gm,'NA')
 	;
 }
 
