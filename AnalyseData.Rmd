@@ -12,6 +12,7 @@ It is based on the latest research into extended luminance color appearance mode
 
 
 ```{r Initialise, echo=FALSE}
+require(colorscience)
 require(ggplot2)
 require(dplyr)
 ```
@@ -25,40 +26,107 @@ pwd
 all=read.csv(file="Projects/color-model-hlcam/data_perceptual.csv",header=TRUE)
 ```
 
-## Explore the perceptual data
-Do a jitter and scatter plot of the perceptual dimensions
-1. Hc - Hue quadrature. Varies from 0 to 400: redness (0) - yellowness (100) - greenness (200) - blueness (300) - redness (400)
-2. Jc - Lightness. A scale of 0–100 relative to the brightness of reference white
-3. Mc - Colorfulness. An absolute scale of 0 to unlimited, but typically 0 to 100
+## Explore the data
+Luminance Range and Background Level has strongest influence on color perception.
 
-```{r perceptions}
-ggplot(data=all)+geom_jitter(aes(y=Jc,x="Jc"))+geom_jitter(aes(y=Mc,x="Mc"))+geom_jitter(aes(y=Hc,x="Hc"))+ theme(axis.title.x = element_blank())+ theme(axis.title.y = element_blank())
+Lighting Conditions
+1. CCT - Correlated color termperature of illuminant in 'Kelvin. Candle (1850K), Incandescent Lamp (2400K), Warm CFL (3000K), Moonlight (4100K), Horizon daylight (D50 5000K), Vertical daylight (D55 5500K - D60 6000K), Midday (5780K), Overcast/LCD (D65 6500K), Clear blue poleward sky (15000K - 27000K)
+2. Xw, Yw, Zw - XYZ for Adopted White in test illuminant, Yw is also the Peak Luminance given its white
+3. Pb - Background lightness percentage = Yb / Yw * 100. Ranges from 0 to 100.
+4. Xb, Yb, Zb - XYZ for Background
 
-ggplot(data=all)+aes(x=Hc, y=Jc, color=Mc)+geom_point()
+Physical measures
+1. Xs, Ys, Zs - XYZ for sample under test illuminant
 
-```
-
-## OLD DATA
-
-```{r related}
-
-
+Perceptual measures
+1. Hs - Hue quadrature. Varies from 0 to 400: redness (0) - yellowness (100) - greenness (200) - blueness (300) - redness (400)
+2. Js - Lightness. A scale of 0–100 relative to the brightness of reference white
+3. Ms - Colorfulness. An absolute scale of 0 to unlimited, but typically 0 to 100
 
 
-## combine to form matrix for simple manipulation
-mun_XYZ_C <- matrix(c(X,Y,Z), ncol=3)
+```{r explore}
+## confirm relationship between CCT and Xw, Yw, Zw
+## CCT1 calc using McCamy's Approximation https://en.wikipedia.org/wiki/Color_temperature#Approximation
+## inverse using Plankian locus Approximation https://en.wikipedia.org/wiki/Planckian_locus#Approximation
+all$xw = all$Xw / (all$Xw + all$Yw + all$Zw)
+all$yw = all$Yw / (all$Xw + all$Yw + all$Zw)
+all$n = (all$xw - 0.3320) / (all$yw - 0.1858)
+all$CCT1 = -449*all$n^3 + 3525*all$n^2 - 6823.3*all$n + 5520.33
+ggplot(data=all)+aes(x=CCT, y=CCT1)+geom_point()
 
-## cleanup the dataset. Test for y == 0 and set X,Y,Z to be 0 in this case
-mun_XYZ_C[which(all$y==0),] <- c(0,0,0)
+## confirm relationship between Xw, Yw, Zw and Xb, Yb, Zb is just the Pb ratio 
+all$Yb1 = all$Yw * all$Pb / 100
+ggplot(data=all)+aes(x=Yb, y=Yb1, color=Ms)+geom_point()
+all$Xb1 = all$Xw * all$Pb / 100
+ggplot(data=all)+aes(x=Xb, y=Xb1, color=Ms)+geom_point()
+all$Zb1 = all$Zw * all$Pb / 100
+ggplot(data=all)+aes(x=Zb, y=Zb1, color=Ms)+geom_point()
 
-remove(X,Y,Z)
+## explore perceptual measures Js, Ms, Hs
+ggplot(data=all)+geom_jitter(aes(y=Js,x="Js"))+geom_jitter(aes(y=Ms,x="Ms"))+geom_jitter(aes(y=Hs,x="Hs"))+ theme(axis.title.x = element_blank())+ theme(axis.title.y = element_blank())
+ggplot(data=all)+aes(x=Hs, y=Js, color=Ms)+geom_point()
+
+all <- subset(all, select = -c(xw, yw, n, CCT1, Xb1, Yb1, Zb1))
+
 ```
 
 ## Perform Chromatic Adaption
-The chromaticity coordinates of the raw data were calculated using illuminant C and the CIE 1931 2 degree observer. We need to adapt these to illuminant D65 which is used by sRGB. The equation for conversion can be found at http://www.brucelindbloom.com/Eqn_ChromAdapt.html. We will use the Bradford Adaption Method.
+Use the CEICAM02 Chromatic Adaption Algorithm called CAT02
+Refer to https://en.wikipedia.org/wiki/CIECAM02
 
 ```{r ChromaticAdaption}
-M_adapt_C_to_D65 <- matrix(c(0.990448, -0.012371, -0.003564, -0.007168, 1.015594, 0.006770, -0.011615, -0.002928, 0.918157), ncol=3, byrow=TRUE)
+## conversion matrices
+## MCAT02 - MCAT02 transformation matrix (calculated using the CIE 1931 2° standard colorimetric observer)
+## MH - Hunt–Pointer–Estévez space transformation matrix from XYZc to LMSp
+## MHMCAT02 - transformation matrix from LMSc to LMSp
+MCAT02 <- matrix(c(0.7328, 0.4296, -0.1624, -0.7036, 1.6975, 0.0061, 0.0030, 0.0136, 0.9834), ncol=3, byrow=TRUE)
+MH <- matrix(c(0.38971, 0.68898, -0.07868, -0.22981, 1.18340, 0.04641, 0.0, 0.0, 1), ncol=3, byrow=TRUE)
+MHMCAT02 <- MH %*% solve(MCAT02)
+
+## convert LMSs (color sample) and LMSw (adopted white) to LMS space
+## LMSs = XYZs converted to "spectrally sharpened" CAT02 LMS space to prepare for adaptation.
+## LMSw = XYZw (adopted white) converted to "spectrally sharpened" CAT02 LMS space to prepare for adaptation.
+XYZs <- matrix(c(all$Xs,all$Ys,all$Zs), ncol=3)
+XYZw <- matrix(c(all$Xw,all$Yw,all$Zw), ncol=3)
+LMSs <- t(MCAT02 %*% t(XYZs))
+LMSw <- t(MCAT02 %*% t(XYZw))
+
+## use CAT02 to adapt from the illumant adopted white to a reference white used in CIECAM02
+## F = factor determining degree of adaptation based on surround condition (Average, Dim, Dark)
+## D = degree of adaptation (0 for no adaptation, 1 for full adaption)
+## LMSc = Chromatically adaptation XYZs sample using CAT02
+all$F[all$Ambient=='dark'] <- 0.8
+all$F[all$Ambient=='dim'] <- 0.9
+all$F[all$Ambient=='average'] <- 1.0
+all$D <- all$F*(1 - (1/3.6)*exp((-all$La-42)/92))
+Lc <- LMSs[,1] * (all$D * all$Yw / LMSw[,1] + 1 - all$D)
+Mc <- LMSs[,2] * (all$D * all$Yw / LMSw[,2] + 1 - all$D)
+Sc <- LMSs[,3] * (all$D * all$Yw / LMSw[,3] + 1 - all$D)
+LMSc <- matrix(c(Lc, Mc, Sc), ncol=3)
+
+## perform post adaption conversion to cone responses using Hunt-Pointer-Esteves
+## LMSp = Post Adaption Hunt-Point_estevez space
+LMSp = t(MHMCAT02 %*% t(LMSc))
+
+```
+## Cone Response
+Use the High Luminance Color Appearance Model
+Refer to http://reality.cs.ucl.ac.uk/projects/xlrcam/kim09xlrcam.pdf
+
+```{r ConeResponse}
+
+## convert to absolute cone responses
+nc = 0.57
+Lp <- LMSp[,1]^nc / (LMSp[,1]^nc + all$La^nc)
+Mp <- LMSp[,2]^nc / (LMSp[,2]^nc + all$La^nc)
+Sp <- LMSp[,3]^nc / (LMSp[,3]^nc + all$La^nc)
+
+## Calculate achromatic attributes by averaging across cone responses in 40:20:1 ratio
+A <- (40 * Lp + 20 * Mp + Sp) / 61
+
+
+
+
 
 ## perform the chromatic adaption: convert from C -> D65 using Bradford method
 mun_XYZ_D65 <- mun_XYZ_C %*% M_adapt_C_to_D65

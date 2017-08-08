@@ -24,13 +24,14 @@ function extractPhaseData(data) {
 	return data
 		.replace(/Table 1: Summary of viewing conditions for all 19 phases[\s\S]*/gm, '')
 		.replace(/[\s\S]*Luminance/gm, 'Phase Medium CCT Xw Yw Zw La Pb Xb Yb Zb Ambient')
+		.replace(/%/gm,'')
 		.replace(/ /gm, ',')
 	;
 }
 
 function extractAllData(data, phaseData) {
 	const phaseDataSplit = phaseData.split('\n');
-	let result = 'Phase Medium CCT Xw Yw Zw La Pb Xb Yb Zb Ambient Color Xc Yc Zc Jc Mc Hc\n';
+	let result = 'Phase Medium CCT Xw Yw Zw La Pb Xb Yb Zb Ambient Color Xs Ys Zs Js Ms Hs\n';
 	for (var i = 1; i < 20; i++) {
 		result += extractData(text, i, phaseDataSplit);
 	}
