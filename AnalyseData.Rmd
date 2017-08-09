@@ -3,12 +3,13 @@ Title: "color-model-hlcam"
 author: "David Morrison"
 date: "07/08/2017"
 ---
-# High Luminance Color Space Model 
+# High Luminance Color Appearance Model 
 This document aims to develop an improved color appearance model that can be used for the accurate analysis of images for artists and painters.
-It is based on the latest research into extended luminance color appearance models beyond CIECAM02.
+It is based on the 2009 research into extended luminance color appearance models beyond CIECAM02.
 
 ## References
-* Kim Min H, **Modeling Human Color Perception under Extended Luminance Levels**, http://reality.cs.ucl.ac.uk/projects/xlrcam/kim09xlrcam.pdf
+* Kim, M., Weyrich, T. , Kautz, L, 2009. **Modeling human color perception under extended luminance levels**, ACM 
+Trans. Graph. 28 (3), http://reality.cs.ucl.ac.uk/projects/xlrcam/kim09xlrcam.pdf
 
 
 ```{r Initialise, echo=FALSE}
@@ -62,9 +63,16 @@ ggplot(data=all)+aes(x=Xb, y=Xb1, color=Ms)+geom_point()
 all$Zb1 = all$Zw * all$Pb / 100
 ggplot(data=all)+aes(x=Zb, y=Zb1, color=Ms)+geom_point()
 
+## confirm any relationship between La and Yb, should be similar since the background takes up the most of the adaption field
+ggplot(data=all)+aes(x=Yb, y=La, color=Pb)+geom_point()
+
 ## explore perceptual measures Js, Ms, Hs
 ggplot(data=all)+geom_jitter(aes(y=Js,x="Js"))+geom_jitter(aes(y=Ms,x="Ms"))+geom_jitter(aes(y=Hs,x="Hs"))+ theme(axis.title.x = element_blank())+ theme(axis.title.y = element_blank())
 ggplot(data=all)+aes(x=Hs, y=Js, color=Ms)+geom_point()
+
+## explore measures Xs, Ys, Zs
+ggplot(data=all)+geom_jitter(aes(y=Xs,x="Xs"))+geom_jitter(aes(y=Ys,x="Ys"))+geom_jitter(aes(y=Zs,x="Zs"))+geom_jitter(aes(y=La,x="La"))+ theme(axis.title.x = element_blank())+ theme(axis.title.y = element_blank())
+
 
 all <- subset(all, select = -c(xw, yw, n, CCT1, Xb1, Yb1, Zb1))
 
@@ -82,31 +90,162 @@ Refer to https://en.wikipedia.org/wiki/CIECAM02
 MCAT02 <- matrix(c(0.7328, 0.4296, -0.1624, -0.7036, 1.6975, 0.0061, 0.0030, 0.0136, 0.9834), ncol=3, byrow=TRUE)
 MH <- matrix(c(0.38971, 0.68898, -0.07868, -0.22981, 1.18340, 0.04641, 0.0, 0.0, 1), ncol=3, byrow=TRUE)
 MHMCAT02 <- MH %*% solve(MCAT02)
+MCAT02INV <- solve(MCAT02)
+MCAT02INVY <- MCAT02INV[2,]
+Heh <- matrix(c(0.0, 100.0, 200.0, 300.0, 400.0, 0.8, 0.7, 1.0, 1.2, 0.8, 20.14, 90.0, 164.25, 237.53, 380.14), ncol=3)
 
-## convert LMSs (color sample) and LMSw (adopted white) to LMS space
-## LMSs = XYZs converted to "spectrally sharpened" CAT02 LMS space to prepare for adaptation.
-## LMSw = XYZw (adopted white) converted to "spectrally sharpened" CAT02 LMS space to prepare for adaptation.
-XYZs <- matrix(c(all$Xs,all$Ys,all$Zs), ncol=3)
-XYZw <- matrix(c(all$Xw,all$Yw,all$Zw), ncol=3)
-LMSs <- t(MCAT02 %*% t(XYZs))
-LMSw <- t(MCAT02 %*% t(XYZw))
+## convert XYZ to LMS space using MCAT02 transform
+## returns an (n x 3) matrix
+XYZtoLMS <- function(X,Y,Z) {
+  XYZ <- matrix(c(X,Y,Z), ncol=3)
+  LMS <- t(MCAT02 %*% t(XYZ))
+  return (LMS)
+}
 
-## use CAT02 to adapt from the illumant adopted white to a reference white used in CIECAM02
-## F = factor determining degree of adaptation based on surround condition (Average, Dim, Dark)
+## convert LMS to XYZ space using inverse MCAT02 transform
+## returns an (n x 3) matrix
+LMStoXYZ <- function(LMS) {
+  XYZ <- t(MCAT02INV %*% t(LMS))
+  return (XYZ)
+}
+
+## convert LMS to XYZ space using inverse MCAT02 transform
+## returns only the Y component
+LMStoY <- function(LMS) {
+  Y <- t(MCAT02INVY %*% t(LMS))
+  return (Y)
+}
+
+## calculates the degree of adaption based on Ambient surround condition and La
+## A = Ambient surround condition (Average, Dim, Dark)
 ## D = degree of adaptation (0 for no adaptation, 1 for full adaption)
-## LMSc = Chromatically adaptation XYZs sample using CAT02
-all$F[all$Ambient=='dark'] <- 0.8
-all$F[all$Ambient=='dim'] <- 0.9
-all$F[all$Ambient=='average'] <- 1.0
-all$D <- all$F*(1 - (1/3.6)*exp((-all$La-42)/92))
-Lc <- LMSs[,1] * (all$D * all$Yw / LMSw[,1] + 1 - all$D)
-Mc <- LMSs[,2] * (all$D * all$Yw / LMSw[,2] + 1 - all$D)
-Sc <- LMSs[,3] * (all$D * all$Yw / LMSw[,3] + 1 - all$D)
-LMSc <- matrix(c(Lc, Mc, Sc), ncol=3)
+calculateD <- function(A, La) {
+  F[A=='dark'] <- 0.8
+  F[A=='dim'] <- 0.9
+  F[A=='average'] <- 1.0
+  D <- F * (1 - (1 / 3.6) * exp((- La - 42) / 92))
+  return (D)
+}
+
+## use CAT02 to color adapt a sample from the illumant adopted white to a reference white used in CIECAM02
+## D = degree of adaptation (0 for no adaptation, 1 for full adaption)
+## LMSs = LMS of the color sample to adapt
+## LMSw = LMS of the white point (ie illuminant adopted white)
+## LMSc = LMS of the adapted color sample
+LMStoLMSc <- function(D, LMSs,LMSw) {
+  Yw <- LMStoY(LMSw)
+  Lc <- LMSs[,1] * (D * Yw / LMSw[,1] + 1 - D)
+  Mc <- LMSs[,2] * (D * Yw / LMSw[,2] + 1 - D)
+  Sc <- LMSs[,3] * (D * Yw / LMSw[,3] + 1 - D)
+  LMSc <- matrix(c(Lc, Mc, Sc), ncol=3)
+  return (LMSc)  
+}
 
 ## perform post adaption conversion to cone responses using Hunt-Pointer-Esteves
+## LMSc = LMS of the adapted color sample
 ## LMSp = Post Adaption Hunt-Point_estevez space
-LMSp = t(MHMCAT02 %*% t(LMSc))
+LMSctoLMSp <- function(LMSc) {
+  LMSp = t(MHMCAT02 %*% t(LMSc))
+  return (LMSp)
+}
+
+## convert to absolute cone responses
+## LMSp = Post Adaption Hunt-Point_estevez space
+## LMSr = Absolute cone response
+LMSptoLMSr <- function(LMSp, La) {
+  nc = 0.57
+  Lp <- LMSp[,1]^nc / (LMSp[,1]^nc + La^nc)
+  Mp <- LMSp[,2]^nc / (LMSp[,2]^nc + La^nc)
+  Sp <- LMSp[,3]^nc / (LMSp[,3]^nc + La^nc)
+  LMSr <- matrix(c(Lp, Mp, Sp), ncol=3)
+  return(LMSr)
+}
+
+## Calculate achromatic signal by averaging across cone responses in 40:20:1 ratio
+calculateA <- function(LMSr) {
+  A <- (40 * LMSr[,1] + 20 * LMSr[,2] + LMSr[,3]) / 61
+  return (A)
+}
+
+
+## Calculate chromatic signals based on psychophysical results from Vos and Walraven
+calculateab <- function(LMSr) {
+  a <- 1/11 * (11 * LMSr[,1] - 12 * LMSr[,2] + LMSr[,3])
+  b <- 1/9 * (LMSr[,1] + LMSr[,2] - 2 * LMSr[,3])
+  ab  <- matrix(c(a, b), ncol=2)
+  return (ab)
+}
+
+## Calculate perceived Lightness based on achromatic signals and physical stimulus
+## Inverse sigmoidal function to convert As (achromtic signal) to J (perceived lightness)
+## As, Aw achromatic signal for color sample As and for adopted white Aw
+## E physical stimulus 1.0=LCD, 1.2175=transparent media, 1.4572=CRT, 1.7526=reflective paper
+calcLightness <- function(As, Aw, E) {
+  X <- As / Aw
+  gX <- ((-(X-0.24)*0.65^3.65)/(X-0.24-0.89))^(1/3.65)
+  gX[gX<0] <- 0
+  J <- 100 * (E * (gX - 1) + 1)
+  return (J)
+}
+
+# calculate Chroma based on chromatic signals
+calcChroma <- function(a, b) {
+  C <- 456.5 * (sqrt(a*a + b*b))^0.62
+  return (C)
+}
+
+# calculate Hue Angle based on chromatic signals
+calcHue <- function(a, b) {
+  H <- 180 / pi * atan2(b, a)
+  H <- H + 360 * (H < 0)
+  return (H)
+}
+
+## Calculate Hue Quadrature (Moroney et al 2002) based on chromatic signals (to factor in ecentricy)
+## Uses a linear interpolation based on the matrix Heh lookup table
+## i is index in Heh[i,] matrixi which contains three values Hi, ei, hi
+## See https://en.wikipedia.org/wiki/CIECAM02#Appearance_correlates
+calcHueQ <- function(a, b) {
+  h <- calcHue(a, b)
+  h <- h + 360 * (h < 20.14)
+  i = 1 + (h>=90) + (h>=164.25) + (h>=237.53) 
+  ## H = Hi + 100 * ((h - hi) / ei)/((h - hi)/ei + (hi+1 - h)/ei+1)
+  H = Heh[i,1] + 100 * ((h - Heh[i,3]) / Heh[i,2])/((h - Heh[i,3])/Heh[i,2] + (Heh[i+1,3] - h)/Heh[i+1,2])
+  return (H)  
+}
+
+## convert (color sample) and (adopted white) to LMS space
+LMSs <- XYZtoLMS(all$Xs,all$Ys,all$Zs)
+LMSw <- XYZtoLMS(all$Xw,all$Yw,all$Zw)
+
+## use CAT02 to adapt the sample from the adopted white illumant to a reference white used in CIECAM02
+all$D <- calculateD(all$Ambient, all$La)
+LMSsc <- LMStoLMSc(all$D, LMSs, LMSw)
+LMSwc <- LMStoLMSc(all$D, LMSw, LMSw)
+
+## perform post adaption conversion to cone responses using Hunt-Pointer-Esteves
+LMSsp <- LMSctoLMSp(LMSsc)
+LMSwp <- LMSctoLMSp(LMSwc)
+
+## convert to absolute cone responses
+LMSsr <- LMSptoLMSr(LMSsp, all$La)
+LMSwr <- LMSptoLMSr(LMSwp, all$La)
+
+## Calculate achromatic signals by averaging across cone responses in 40:20:1 ratio
+As <- calculateA(LMSsr)
+Aw <- calculateA(LMSwr)
+
+## calculate the perceived lightness (0 to 100)
+all$Js1 <- calcLightness(As, Aw, 1.7526)
+ggplot(data=all)+aes(x=Js, y=Js1, color=Hs)+geom_point()
+
+## Calculate the Hue Quadrature based on chromatic signals
+ab <- calculateab(LMSsr)
+all$Hs1 <- calcHueQ(ab[,1], ab[,2])
+ggplot(data=all)+aes(x=Hs, y=Hs1, color=Hs)+geom_point()
+
+all$Cs1 <- calcChroma(ab[,1], ab[,2])
+ggplot(data=all)+aes(x=Ms, y=Cs1, color=Hs)+geom_point()
 
 ```
 ## Cone Response
