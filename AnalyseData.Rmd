@@ -82,39 +82,23 @@ Refer to http://reality.cs.ucl.ac.uk/projects/xlrcam/kim09xlrcam.pdf
 
 ```{r Forward}
 
-## convert (color sample) and (adopted white) to LMS space
-LMSs <- XYZtoLMS(all$Xs,all$Ys,all$Zs)
-LMSw <- XYZtoLMS(all$Xw,all$Yw,all$Zw)
-
-## use CAT02 to adapt the sample from the adopted white illumant to a reference white used in CIECAM02
-D <- calculateD(all$Ambient, all$La)
-LMSsc <- LMStoLMSc(D, LMSs, LMSw)
-LMSwc <- LMStoLMSc(D, LMSw, LMSw)
-
-## perform post adaption conversion to cone responses using Hunt-Pointer-Esteves
-LMSsp <- LMSctoLMSp(LMSsc)
-LMSwp <- LMSctoLMSp(LMSwc)
-
-## convert to absolute cone responses
-LMSsr <- LMSptoLMSr(LMSsp, all$La)
-LMSwr <- LMSptoLMSr(LMSwp, all$La)
-
-## Calculate achromatic and chromatic signals 
-As <- LMSrtoA(LMSsr)
-Aw <- LMSrtoA(LMSwr)
-ab <- LMSrtoAB(LMSsr)
+## convert color sample to perceptual JCH given Adopted White, Background Luminance, Ambient and E
+JHC <- XYZtoJHC(all$Xs,all$Ys,all$Zs,all$Xw,all$Yw,all$Zw,all$La,all$Ambient,1.0)
 
 ## calculate the perceived lightness (0 to 100) compared to reference white
-all$Js1 <- AtoLightness(As, Aw, 1.0)
+all$Js1 <- JHC[,1]
+all$Hs1 <- JHC[,2]
+all$Cs1 <- JHC[,3]
+
 ggplot(data=all)+aes(x=Js, y=Js1, color=Hs)+geom_point()
-
-## Calculate the Hue Quadrature based on chromatic signals
-all$Hs1 <- ABtoHueQ(ab)
 ggplot(data=all)+aes(x=Hs, y=Hs1, color=Hs)+geom_point()
-
-## Calculate the Chroma based on chromatic signals
-all$Cs1 <- ABtoChroma(ab)
 ggplot(data=all)+aes(x=Ms, y=Cs1, color=Hs)+geom_point()
+
+## Calculate standard errror 
+Herr <- abs(all$Hs - all$Hs1)
+Herr <- Herr + (400 - 2*Herr)*(Herr>200)
+all$forward_error <- sqrt((Herr)^2 + (all$Js - all$Js1)^2 + (all$Ms - all$Cs1)^2)
+ggplot(data=all)+geom_jitter(aes(y=forward_error,x="samples"))
 
 ```
 
@@ -124,34 +108,17 @@ Refer to http://reality.cs.ucl.ac.uk/projects/xlrcam/kim09xlrcam.pdf
 
 ```{r Reverse}
 
-## calculate the achromatic white point for the target device
-RLMSw <- XYZtoLMS(all$Xw,all$Yw,all$Zw)
-RD <- calculateD(all$Ambient, all$La)
-RLMSwc <- LMStoLMSc(RD, RLMSw, RLMSw)
-RLMSwp <- LMSctoLMSp(RLMSwc)
-RLMSwr <- LMSptoLMSr(RLMSwp, all$La)
-RAw <- LMSrtoA(RLMSwr)
+## convert perceptual JCH to color sample XYZ given Adopted White, Background Luminance, Ambient and E
+XYZ = JHCtoXYZ(all$Js1, all$Hs1, all$Cs1, all$Xw, all$Yw, all$Zw, all$La, all$Ambient, 1.0) 
 
-# calculate the acrhomatic signal A from the sample lightness J
-RAs <- LightnesstoA(all$Js1, RAw, 1.0)
+all$Xs1 <- XYZ[,1]
+all$Ys1 <- XYZ[,2]
+all$Zs1 <- XYZ[,3]
 
-# calculate the ab signal from the Hue Quadrant and Chroma 
-Rab <- HueQChromatoAB(all$Hs1, all$Cs1)
+# plot to check the squared error of the results against the original
+all$reverse_error <- sqrt((all$Xs - all$Xs1)^2 + (all$Ys - all$Ys1)^2 + (all$Zs - all$Zs1)^2)
+ggplot(data=all)+geom_jitter(aes(y=reverse_error,x="samples"))
 
-# compute cone response LMS from the achromatic signal A and opponents a & b
-RLMSsr <- AabtoLMSr(RAs, Rab)
-
-# compute cone signal LMS from the LMS cone response and La
-LMSsp <- LMSrtoLMSp(LMSsr, La)
-
-# compute the color adapted LMS
-LMSsc <- LMSptoLMSc(LMSsp)
-
-# compute the raw LMS
-LMS <- LMSctoLMS(LMSsc, D, LMSw)
-
-# compute the XYZ
-XYZ <- LMStoXYZ(LMS)   
 
 ```
 ## END
