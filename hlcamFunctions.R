@@ -169,7 +169,7 @@ AabtoLMSr <- function(As, ab) {
 AtoLightness <- function(As, Aw, E) {
   X <- As / Aw
   gX <- ((-(X-0.24)*0.65^3.65)/(X-0.24-0.89))^(1/3.65)
-  gX[gX<0] <- 0
+#  gX[gX<0] <- 0
   J <- 100 * (E * (gX - 1) + 1)
   return (J)
 }
@@ -265,24 +265,24 @@ XYZtoJHC <- function(Xs, Ys, Zs, Xw, Yw, Zw, La, Ambient, E) {
 # reverse convert JCH to XYZ: JHC, XYZw, La, A, E -> XYZs
 JHCtoXYZ <- function(Js, Hs, Cs, Xw, Yw, Zw, La, Ambient, E) {
   ## calculate the achromatic white point for the target device
-  RLMSw <- XYZtoLMS(all$Xw,all$Yw,all$Zw)
-  RD <- calculateD(all$Ambient, all$La)
+  RLMSw <- XYZtoLMS(Xw,Yw,Zw)
+  RD <- calculateD(Ambient, La)
   RLMSwc <- LMStoLMSc(RD, RLMSw, RLMSw)
   RLMSwp <- LMSctoLMSp(RLMSwc)
-  RLMSwr <- LMSptoLMSr(RLMSwp, all$La)
+  RLMSwr <- LMSptoLMSr(RLMSwp, La)
   RAw <- LMSrtoA(RLMSwr)
   
   # calculate the acrhomatic signal A from the sample lightness J
-  RAs <- LightnesstoA(all$Js1, RAw, 1.0)
+  RAs <- LightnesstoA(Js, RAw, E)
   
   # calculate the chromatic ab signal from the Hue Quadrant and Chroma 
-  Rab <- HueQChromatoAB(all$Hs1, all$Cs1)
+  Rab <- HueQChromatoAB(Hs, Cs)
   
   # compute cone response LMS from the achromatic signal A and opponents a & b
   RLMSsr <- AabtoLMSr(RAs, Rab)
   
   # compute cone signal LMS from the LMS cone response and La
-  RLMSsp <- LMSrtoLMSp(RLMSsr, all$La)
+  RLMSsp <- LMSrtoLMSp(RLMSsr, La)
   
   # compute the color adapted LMS
   RLMSsc <- LMSptoLMSc(RLMSsp)

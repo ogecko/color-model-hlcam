@@ -13,6 +13,7 @@ Trans. Graph. 28 (3), http://reality.cs.ucl.ac.uk/projects/xlrcam/kim09xlrcam.pd
 
 
 ```{r Initialise, echo=FALSE}
+require(colorspace)
 require(ggplot2)
 require(dplyr)
 source("Projects/color-model-hlcam/hlcamFunctions.R")
@@ -121,4 +122,72 @@ ggplot(data=all)+geom_jitter(aes(y=reverse_error,x="samples"))
 
 
 ```
+## Convert XYZ (D65) to Linear sRGB (D65)
+Now we can convert from XYZ to Linear sRGB. The equation for conversion can be found at http://www.brucelindbloom.com/Eqn_RGB_XYZ_Matrix.html. We shall use the precalculated matrix for sRGB with D65 illumination.
+
+```{r ConvertRGB1}
+## Convert from XYZ (D65) to sRGB (D65)
+## sRGB space is non-linear so we need to compand the linear RGB channels to a non-linear sRGB scale. 
+## The equations for this conversion can be found at http://www.brucelindbloom.com/Eqn_XYZ_to_RGB.html
+
+## sRGB profile transformation: XYZ %*% MsRGB
+M_XYZ_to_sRGB_D65 <- matrix(c(3.24071, -0.969258, 0.0556352, -1.53726, 1.87599, -0.203996, -0.498571, 0.0415557, 1.05707), ncol=3, byrow=TRUE)
+MsRGB <- matrix(c(3.2404542, -1.5371385, -0.4985314, -0.9692660, 1.8760108, 0.0415560, 0.0556434, -0.2040259, 1.0572252), ncol=3, byrow=FALSE)
+MsRGB <- matrix(c(3.24071, -1.53726, -0.498571, -0.969258, 1.87599, 0.0415557, 0.0556352, -0.203996, 1.05707), ncol=3, byrow=FALSE)
+XYZ = JHCtoXYZ(all$Js, all$Hs, all$Ms, rep(0.95047,760), rep(1.0,760), rep(1.08883,760), rep(100,760), all$Ambient, 1.0) 
+
+J <- rep(50,40)
+H <- seq(0,390,10)
+C <- rep(20,40)
+XYZ = JHCtoXYZ(J, H, C, rep(0.95047,40), rep(1.0,40), rep(1.08883,40), rep(50,40), rep('average',40), 1.0) 
+
+d <- data.frame(J=double(),H=double(),C=double(),Xw=double(),Yw=double(),Zw=double(),La=double(),E=double())
+La=100
+Lw=100
+D50 = matrix(c(0.9642, 1, 0.8251))
+D65 = matrix(c(0.95047, 1, 1.08883))
+XYZw = D65*Lw
+for (h in seq(300,399,by=10)) {
+  for (j in seq(0,100,by=10)) {
+    new=data.frame(J=j,H=h,C=seq(0,100,by=10),Xw=XYZw[1],Yw=XYZw[2],Zw=XYZw[3], La=La, E=1)
+    i=nrow(d)
+    d[seq(i+1,i+nrow(new)),]=new[seq(1,nrow(new)),]
+    }
+  }
+XYZ = JHCtoXYZ(d$J, d$H, d$C, d$Xw, d$Yw, d$Zw, d$La, rep('dim',nrow(d)), d$E) / Lw
+
+
+## apply the conversion matrix to convert XYZ to RGBlinear
+RGBlinear <- XYZ %*% MsRGB
+
+## define the transformation functions, these are applied on a conditional basis:
+fun1 <- function(col_comp) { 1.055 * ( col_comp ^ ( 1 / 2.4 ) ) - 0.055 } 
+fun2 <- function(col_comp) { 12.92 * col_comp } 
+
+## the specific function is contingent on the absolute value of r,g,b components
+R <- ifelse(RGBlinear[,1] > 0.0031308, fun1(RGBlinear[,1]), fun2(RGBlinear[,1]))
+G <- ifelse(RGBlinear[,2] > 0.0031308, fun1(RGBlinear[,2]), fun2(RGBlinear[,2]))
+B <- ifelse(RGBlinear[,3] > 0.0031308, fun1(RGBlinear[,3]), fun2(RGBlinear[,3]))
+
+R[R< 0]<-NA
+G[G< 0]<-NA
+B[B< 0]<-NA
+R[R> 1]<-NA
+G[G> 1]<-NA
+B[B> 1]<-NA
+
+hexRGB <- hex(sRGB(R,G,B))
+ggplot(data = d, aes(x = C, y = J)) +
+    geom_tile(aes(fill = hexRGB), color="white", size = 1) +
+    scale_colour_identity() +
+    scale_x_discrete("Chroma") + 
+    scale_y_discrete("Value", expand = c(0.125, 0)) +
+    scale_fill_identity()+
+    theme(aspect.ratio=1)+
+    facet_wrap(~ H,ncol=4)
+
+
+```
+
 ## END
+
